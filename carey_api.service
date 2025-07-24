@@ -1,0 +1,14 @@
+
+[Unit]
+Description=Carey to Waynium API Flask Server
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/opt/carey-waynium-api
+ExecStart=/opt/carey-waynium-api/venv/bin/python /opt/carey-waynium-api/main.py
+Restart=always
+Environment="PATH=/opt/carey-waynium-api/venv/bin"
+
+[Install]
+WantedBy=multi-user.target
