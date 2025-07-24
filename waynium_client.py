@@ -1,35 +1,33 @@
 import requests
 import os
 import jwt
-import datetime
+import time
+from dotenv import load_dotenv
 
-def forward_to_waynium(carey_data):
+load_dotenv()
+
+WAYNIUM_URL = os.getenv("WAYNIUM_URL")  # ex: https://api-sandbox.waynium.com/reservations
+WAYNIUM_API_KEY = os.getenv("WAYNIUM_API_KEY")
+WAYNIUM_API_SECRET = os.getenv("WAYNIUM_API_SECRET")
+
+def generate_jwt():
+    payload = {
+        "iss": WAYNIUM_API_KEY,
+        "iat": int(time.time()),
+        "exp": int(time.time()) + 300  # 5 min
+    }
+    return jwt.encode(payload, WAYNIUM_API_SECRET, algorithm="HS256")
+
+def forward_to_waynium(data):
+    token = generate_jwt()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
     try:
-        jwt_secret = os.getenv("WAYNIUM_SECRET", "demo_secret")
-        jwt_issuer = os.getenv("WAYNIUM_ISSUER", "demo_issuer")
-        jwt_url = os.getenv("WAYNIUM_ENDPOINT", "https://gds.waynium.net/gdsv2/set-ressource")
-
-        payload = {
-            "sub": "carey_integration",
-            "iat": datetime.datetime.utcnow()
-        }
-
-        token = jwt.encode(payload, jwt_secret, algorithm="HS256")
-
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-
-        # Placeholder transformation - replace with real logic
-        waynium_payload = {
-            "booking_id": carey_data.get("reservationId", "UNKNOWN"),
-            "passenger_name": f"{carey_data.get('passenger', {}).get('firstName', '')} {carey_data.get('passenger', {}).get('lastName', '')}",
-            "pickup_time": carey_data.get("pickup", {}).get("time", ""),
-            "pickup_location": carey_data.get("pickup", {}).get("location", "")
-        }
-
-        response = requests.post(jwt_url, json=waynium_payload, headers=headers)
-        return response.text
-    except Exception as e:
-        return str(e)
+        response = requests.post(WAYNIUM_URL, json=data, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"[ERROR] Waynium API call failed: {e}")
+        return {"error": str(e)}
