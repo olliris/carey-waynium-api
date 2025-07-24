@@ -1,20 +1,42 @@
 openapi: 3.0.0
 info:
-  title: Carey → Waynium Webhook API
-  version: "1.0.0"
+  title: Carey → Waynium API
+  version: 1.0.0
+  description: |
+    Cette API reçoit les réservations Carey via webhook (POST) et les redirige vers l’API Waynium.
+
 paths:
   /carey/webhook:
     post:
-      summary: Reçoit les données de réservation Carey
+      summary: Réception des réservations Carey
+      description: Reçoit un webhook POST contenant les détails d'une réservation Carey.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ReservationPayload'
+              type: object
+              properties:
+                reservationId:
+                  type: string
+                passenger:
+                  type: object
+                  properties:
+                    firstName:
+                      type: string
+                    lastName:
+                      type: string
+                pickup:
+                  type: object
+                  properties:
+                    time:
+                      type: string
+                      format: date-time
+                    location:
+                      type: string
       responses:
         '200':
-          description: Confirmation du traitement
+          description: Données transmises avec succès
           content:
             application/json:
               schema:
@@ -24,25 +46,3 @@ paths:
                     type: string
                   waynium_response:
                     type: string
-components:
-  schemas:
-    ReservationPayload:
-      type: object
-      properties:
-        reservationId:
-          type: string
-        passenger:
-          type: object
-          properties:
-            firstName:
-              type: string
-            lastName:
-              type: string
-        pickup:
-          type: object
-          properties:
-            time:
-              type: string
-              format: date-time
-            location:
-              type: string
