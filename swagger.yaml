@@ -1,0 +1,48 @@
+openapi: 3.0.0
+info:
+  title: Carey → Waynium Webhook API
+  version: "1.0.0"
+paths:
+  /carey/webhook:
+    post:
+      summary: Reçoit les données de réservation Carey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReservationPayload'
+      responses:
+        '200':
+          description: Confirmation du traitement
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  waynium_response:
+                    type: string
+components:
+  schemas:
+    ReservationPayload:
+      type: object
+      properties:
+        reservationId:
+          type: string
+        passenger:
+          type: object
+          properties:
+            firstName:
+              type: string
+            lastName:
+              type: string
+        pickup:
+          type: object
+          properties:
+            time:
+              type: string
+              format: date-time
+            location:
+              type: string
