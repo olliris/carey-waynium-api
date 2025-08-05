@@ -1,0 +1,73 @@
+{
+  "Carey Field": "example_Carey Field",
+  "trip": {
+    "reservationNumber": "example_reservationNumber",
+    "reservationSource": "example_reservationSource",
+    "serviceProvider": "example_serviceProvider",
+    "accountName": "example_accountName",
+    "passengerDetails": {
+      "firstName": "example_firstName",
+      "lastName": "example_lastName",
+      "mobileNumber": "example_mobileNumber",
+      "emailAddress": "example_emailAddress",
+      "serviceLevel": "example_serviceLevel",
+      "passengerCount": "example_passengerCount",
+      "passengerNames": "example_passengerNames"
+    },
+    "pickUpDetails": {
+      "locationType": "example_locationType",
+      "transportationCenterDetails": {
+        "transportationCenterName": "example_transportationCenterName",
+        "transportationCenterCode": "example_transportationCenterCode",
+        "carrierName": "example_carrierName",
+        "carrierCode": "example_carrierCode",
+        "carrierNumber": "example_carrierNumber",
+        "source": "example_source",
+        "domestic": "example_domestic",
+        "privateAviation": "example_privateAviation"
+      },
+      "pickUpTime": "example_pickUpTime",
+      "locationInstructions": "example_locationInstructions",
+      "specialInstructions": "example_specialInstructions",
+      "puLatitude": "example_puLatitude",
+      "puLongitude": "example_puLongitude"
+    },
+    "dropOffDetails": {
+      "locationType": "example_locationType",
+      "addressDetails": {
+        "name": "example_name",
+        "addressLine1": "example_addressLine1",
+        "city": "example_city",
+        "stateCode": "example_stateCode",
+        "country": "example_country",
+        "countryCode": "example_countryCode"
+      },
+      "doLatitude": "example_doLatitude",
+      "doLongitude": "example_doLongitude"
+    },
+    "greeterRequested": "example_greeterRequested",
+    "mobileNumber": "example_mobileNumber",
+    "phoneNumber": "example_phoneNumber",
+    "bagsCount": "example_bagsCount",
+    "tripType": "example_tripType",
+    "serviceType": "example_serviceType",
+    "vehicleType": "example_vehicleType",
+    "serviceCity": "example_serviceCity",
+    "bookedBy": "example_bookedBy",
+    "bookedByPhone": "example_bookedByPhone",
+    "status": "example_status",
+    "itinerary": "example_itinerary",
+    "priceEstimate": "example_priceEstimate",
+    "paymentType": "example_paymentType",
+    "updateTime": "example_updateTime",
+    "reservationPreferences": "example_reservationPreferences",
+    "isNewTrip": "example_isNewTrip",
+    "reservationVersion": "example_reservationVersion"
+  },
+  "cancelledTrip": {
+    "reservationNumber": "example_reservationNumber",
+    "serviceProvider": "example_serviceProvider",
+    "cancellationNumber": "example_cancellationNumber",
+    "cancellationTime": "example_cancellationTime"
+  }
+}
