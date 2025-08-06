@@ -26,6 +26,9 @@ python main.py
 
 Every time you reconnect to your VPS (via SSH), remember to **activate your Python environment** before running your server:
 
+ssh root@46.255.164.90
+mot de passe comme d'habitude
+
 ```bash
 cd /opt/carey-waynium-api
 source venv/bin/activate
