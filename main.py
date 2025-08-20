@@ -427,7 +427,7 @@ def healthz():
 @app.get("/readyz")
 def readyz():
     # ici tu peux ajouter des checks (clé Waynium présente, etc.)
-    ready = WAYNIUM_API_KEY != "abllimousines"
+    ready = WAYNIUM_API_KEY != "YOUR_API_KEY_HERE"
     return jsonify({"ready": ready}), 200 if ready else 503
 
 @app.get("/version")
