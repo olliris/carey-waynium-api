@@ -1,15 +1,15 @@
+# test_transform.py
 import json
 from transform import transform_to_waynium
 
-with open("test_carey_payload.json", "r") as file:
+with open("test_carey_payload.json", "r", encoding="utf-8") as file:
     carey_payload = json.load(file)
 
 waynium_payload = transform_to_waynium(carey_payload)
 
 print("=== WAYNIUM PAYLOAD ===")
-print(json.dumps(waynium_payload, indent=2))
+print(json.dumps(waynium_payload, indent=2, ensure_ascii=False))
 
-# ✅ Vérifications automatiques de quelques champs clés
 expected_keys = [
     "booking_reference",
     "pickup_time",
@@ -31,7 +31,7 @@ expected_keys = [
 
 print("\n=== FIELD CHECK ===")
 for key in expected_keys:
-    if key in waynium_payload:
+    if key in waynium_payload and waynium_payload[key] not in (None, ""):
         print(f"[✔] {key} found: {waynium_payload[key]}")
     else:
-        print(f"[✘] {key} missing!")
+        print(f"[✘] {key} missing or empty!")
