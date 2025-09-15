@@ -1,12 +1,11 @@
 # main.py
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from transform import transform_payload
+from transform import transform_to_waynium, transform_payload  # les deux existent
 import os, re, json, logging, requests
 from datetime import datetime
 
 # ---------------------------------- Config ----------------------------------
-# -> Tu peux aussi passer ces valeurs par variables d'env
 WAYNIUM_API_URL    = os.getenv("WAYNIUM_API_URL", "https://stage-gdsapi.waynium.net/api-externe/set-ressource")
 WAYNIUM_API_KEY    = os.getenv("WAYNIUM_API_KEY", "abllimousines")
 WAYNIUM_API_SECRET = os.getenv("WAYNIUM_API_SECRET", "be5F47w72eGxwWe8EAZe9Y4vP38g2rRG")
@@ -219,6 +218,82 @@ def _waynium_headers(body_bytes: bytes) -> dict:
         return {"Content-Type":"application/json","X-API-KEY":WAYNIUM_API_KEY,"X-SIGNATURE":signature}
     return {"Content-Type":"application/json","X-API-KEY":WAYNIUM_API_KEY,"X-API-SECRET":WAYNIUM_API_SECRET}
 
+# ---------------------- Détection schéma & conversions ----------------------
+def is_carey_v2(payload: dict) -> bool:
+    return isinstance(payload, dict) and (
+        "pickup" in payload or "dropoff" in payload or "passenger" in payload or "reservationId" in payload
+    )
+
+def trip_to_waynium(trip: dict) -> dict:
+    pd = trip.get("passengerDetails", {}) or {}
+    pu = trip.get("pickUpDetails", {}) or {}
+    do = trip.get("dropOffDetails", {}) or {}
+    tcd = pu.get("transportationCenterDetails", {}) or {}
+    ad = (do.get("addressDetails") or {}) if isinstance(do.get("addressDetails"), dict) else {}
+
+    def up(x): 
+        return x.upper().replace(" ", "_") if isinstance(x, str) else x
+
+    return {
+        "booking_reference": trip.get("reservationNumber",""),
+        "created_by": trip.get("bookedBy",""),
+        "reservation_source": trip.get("reservationSource",""),
+        "supplier_id": trip.get("serviceProvider",""),
+        "account_name": trip.get("accountName",""),
+
+        "passenger_first_name": pd.get("firstName",""),
+        "passenger_last_name": pd.get("lastName",""),
+        "passenger_email": pd.get("emailAddress",""),
+        "passenger_mobile": pd.get("mobileNumber",""),
+        "service_level": up(pd.get("serviceLevel","SERVICE_PLUS")),
+        "passenger_count": pd.get("passengerCount") or 1,
+
+        "pickup_time": pu.get("pickUpTime",""),
+        "pickup_location_type": up(pu.get("locationType","ADDRESS")),
+        "pickup_instructions": pu.get("locationInstructions",""),
+        "pickup_latitude": pu.get("puLatitude"),
+        "pickup_longitude": pu.get("puLongitude"),
+        "pickup_transport_center_name": tcd.get("transportationCenterName",""),
+        "pickup_transport_center_code": tcd.get("transportationCenterCode",""),
+        "pickup_carrier_name": tcd.get("carrierName",""),
+        "pickup_carrier_code": tcd.get("carrierCode",""),
+        "pickup_carrier_number": tcd.get("carrierNumber",""),
+        "pickup_source": tcd.get("source",""),
+        "pickup_domestic": bool(tcd.get("domestic", False)),
+        "pickup_private_aviation": bool(tcd.get("privateAviation", False)),
+
+        "dropoff_address": ad.get("addressLine1") or do.get("address",""),
+        "dropoff_city": ad.get("city") or do.get("city",""),
+        "dropoff_postal_code": ad.get("postalCode") or do.get("postalCode",""),
+        "dropoff_country_code": ad.get("countryCode") or do.get("country",""),
+        "dropoff_latitude": do.get("doLatitude"),
+        "dropoff_longitude": do.get("doLongitude"),
+
+        "service_type": up(trip.get("serviceType","PREMIUM")),
+        "trip_type": up(trip.get("tripType","POINT_TO_POINT")),
+        "vehicle_type": up(trip.get("vehicleType","EXECUTIVE_SEDAN")),
+        "bags": trip.get("bagsCount") or 0,
+        "pickup_sign": trip.get("pickupSign",""),
+        "greeter_requested": bool(trip.get("greeterRequested", False)),
+
+        "payment_method": up(trip.get("paymentType","ACCOUNT")),
+        "price_total": None,
+        "price_currency": None,
+        "price_tax_included": True,
+
+        "booked_by": trip.get("bookedBy",""),
+        "booked_by_phone": trip.get("bookedByPhone",""),
+        "trip_status": up(trip.get("status","OPEN")),
+        "notes": "",
+
+        "reservation_version": trip.get("reservationVersion") or 1,
+        "update_time": trip.get("updateTime",""),
+        "meta_created": "",
+        "meta_source": "CAREY_TRIP_LEGACY",
+
+        "city": ad.get("city") or do.get("city",""),
+    }
+
 # ---------------------------------- Routes ----------------------------------
 @app.post("/carey/webhook")
 def carey_webhook():
@@ -236,20 +311,28 @@ def carey_webhook():
             log_json("warning", event="auth_invalid")
             return jsonify({"status":"error","message":"Missing or invalid API key"}), 401
 
-        # Validation light
-        ok, errors = validate_minimal(normalized)
-        if not ok:
-            log_json("warning", event="validation_failed", errors=errors, corr=corrections)
-            return jsonify({"status":"error","code":996,"message":"Validation failed",
-                            "errors":errors,"correctionsApplied":corrections}), 400
+        # Chemin Carey v2 (pickup/dropoff/passenger...)
+        if is_carey_v2(incoming):
+            try:
+                waynium_payload = transform_to_waynium(incoming)
+            except Exception as te:
+                log_json("error", event="transform_error_v2", error=str(te))
+                return jsonify({"status":"error","code":996,"message":"transform_error_v2",
+                                "errors":[str(te)],"correctionsApplied":corrections}), 400
 
-        # Transform Carey -> Waynium
-        try:
-            waynium_payload = transform_payload(normalized)
-        except Exception as te:
-            log_json("error", event="transform_error", error=str(te))
-            return jsonify({"status":"error","code":996,"message":"transform_error",
-                            "errors":[str(te)],"correctionsApplied":corrections}), 400
+        # Chemin Carey legacy trip.*
+        else:
+            ok, errors = validate_minimal(normalized)
+            if not ok:
+                log_json("warning", event="validation_failed", errors=errors, corr=corrections)
+                return jsonify({"status":"error","code":996,"message":"Validation failed",
+                                "errors":errors,"correctionsApplied":corrections}), 400
+            try:
+                waynium_payload = trip_to_waynium(normalized.get("trip", {}))
+            except Exception as te:
+                log_json("error", event="transform_error_trip", error=str(te))
+                return jsonify({"status":"error","code":996,"message":"transform_error_trip",
+                                "errors":[str(te)],"correctionsApplied":corrections}), 400
 
         # Envoi Waynium
         body_str = json.dumps(waynium_payload, ensure_ascii=False)
@@ -257,11 +340,12 @@ def carey_webhook():
         r = requests.post(WAYNIUM_API_URL, data=body_str.encode("utf-8"), headers=headers, timeout=REQUEST_TIMEOUT)
 
         if r.status_code in (200, 201):
-            try: body = r.json()
-            except Exception: body = {"raw": r.text}
+            try:
+                body = r.json()
+            except Exception:
+                body = {"raw": r.text}
             return jsonify({"status":"success","waynium_response":body,"correctionsApplied":corrections}), 200
 
-        # Erreurs Waynium
         return jsonify({"status":"upstream_error","upstream":"waynium","code":r.status_code,"response":r.text}), 502 if r.status_code < 500 else r.status_code
 
     except Exception as e:
@@ -283,5 +367,4 @@ def version():
 
 # -------------------------------- Entrypoint -------------------------------
 if __name__ == "__main__":
-    # dev/local: python main.py
     app.run(host="0.0.0.0", port=int(os.getenv("PORT","5000")))
