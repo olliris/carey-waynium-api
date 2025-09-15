@@ -1,16 +1,14 @@
 # main.py
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from transform import transform_to_waynium, transform_payload  # les deux existent
-import os, re, json, logging, requests
+from transform import transform_to_waynium, transform_payload  # alias conservé
+import os, re, json, logging, requests, jwt
 from datetime import datetime
 
 # ---------------------------------- Config ----------------------------------
 WAYNIUM_API_URL    = os.getenv("WAYNIUM_API_URL", "https://stage-gdsapi.waynium.net/api-externe/set-ressource")
-WAYNIUM_API_KEY    = os.getenv("WAYNIUM_API_KEY", "abllimousines")
-WAYNIUM_API_SECRET = os.getenv("WAYNIUM_API_SECRET", "be5F47w72eGxwWe8EAZe9Y4vP38g2rRG")
-WAYNIUM_AUTH_MODE  = os.getenv("WAYNIUM_AUTH_MODE", "HEADERS").upper()  # HEADERS | BASIC | HMAC
-
+WAYNIUM_API_KEY    = os.getenv("WAYNIUM_API_KEY", "abllimousines")  # << issu de la réunion
+WAYNIUM_API_SECRET = os.getenv("WAYNIUM_API_SECRET", "be5F47w72eGxwWe8EAZe9Y4vP38g2rRG")  # << secret fourni
 WEBHOOK_API_KEYS   = {k.strip() for k in os.getenv("WEBHOOK_API_KEYS", "1").split(",") if k.strip()}
 REQUEST_TIMEOUT    = float(os.getenv("REQUEST_TIMEOUT", "15"))
 
@@ -203,21 +201,6 @@ def validate_minimal(data: dict):
 
     return (len(errs) == 0), errs
 
-def _waynium_headers(body_bytes: bytes) -> dict:
-    """
-    HEADERS : X-API-KEY / X-API-SECRET
-    BASIC   : Authorization: Basic base64(apiKey:secret)
-    HMAC    : X-API-KEY + X-SIGNATURE (HMAC-SHA256(body))
-    """
-    import base64, hmac, hashlib
-    if WAYNIUM_AUTH_MODE == "BASIC":
-        token = base64.b64encode(f"{WAYNIUM_API_KEY}:{WAYNIUM_API_SECRET}".encode("utf-8")).decode("ascii")
-        return {"Content-Type":"application/json","Authorization":f"Basic {token}"}
-    if WAYNIUM_AUTH_MODE == "HMAC":
-        signature = hmac.new(WAYNIUM_API_SECRET.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
-        return {"Content-Type":"application/json","X-API-KEY":WAYNIUM_API_KEY,"X-SIGNATURE":signature}
-    return {"Content-Type":"application/json","X-API-KEY":WAYNIUM_API_KEY,"X-API-SECRET":WAYNIUM_API_SECRET}
-
 # ---------------------- Détection schéma & conversions ----------------------
 def is_carey_v2(payload: dict) -> bool:
     return isinstance(payload, dict) and (
@@ -294,6 +277,19 @@ def trip_to_waynium(trip: dict) -> dict:
         "city": ad.get("city") or do.get("city",""),
     }
 
+# --------------------------- Waynium JWT headers ----------------------------
+def _waynium_headers(_body_bytes: bytes) -> dict:
+    """
+    Authentification JWT Waynium: Authorization: Bearer <token>
+    token = HS256( payload={iss: WAYNIUM_API_KEY, iat: now}, secret=WAYNIUM_API_SECRET )
+    """
+    payload = {
+        "iss": WAYNIUM_API_KEY,
+        "iat": int(datetime.utcnow().timestamp())
+    }
+    token = jwt.encode(payload, WAYNIUM_API_SECRET, algorithm="HS256")
+    return {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+
 # ---------------------------------- Routes ----------------------------------
 @app.post("/carey/webhook")
 def carey_webhook():
@@ -306,12 +302,12 @@ def carey_webhook():
 
         normalized, effective_key, corrections = normalize_payload(incoming, dict(request.headers))
 
-        # Auth
+        # Auth entrée webhook
         if not effective_key or effective_key not in WEBHOOK_API_KEYS:
             log_json("warning", event="auth_invalid")
             return jsonify({"status":"error","message":"Missing or invalid API key"}), 401
 
-        # Chemin Carey v2 (pickup/dropoff/passenger...)
+        # Carey v2 (pickup/dropoff/passenger…)
         if is_carey_v2(incoming):
             try:
                 waynium_payload = transform_to_waynium(incoming)
@@ -319,8 +315,7 @@ def carey_webhook():
                 log_json("error", event="transform_error_v2", error=str(te))
                 return jsonify({"status":"error","code":996,"message":"transform_error_v2",
                                 "errors":[str(te)],"correctionsApplied":corrections}), 400
-
-        # Chemin Carey legacy trip.*
+        # Carey legacy trip.*
         else:
             ok, errors = validate_minimal(normalized)
             if not ok:
@@ -334,7 +329,7 @@ def carey_webhook():
                 return jsonify({"status":"error","code":996,"message":"transform_error_trip",
                                 "errors":[str(te)],"correctionsApplied":corrections}), 400
 
-        # Envoi Waynium
+        # Envoi vers Waynium (JWT)
         body_str = json.dumps(waynium_payload, ensure_ascii=False)
         headers = _waynium_headers(body_str.encode("utf-8"))
         r = requests.post(WAYNIUM_API_URL, data=body_str.encode("utf-8"), headers=headers, timeout=REQUEST_TIMEOUT)
