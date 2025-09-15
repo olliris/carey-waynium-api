@@ -16,6 +16,10 @@ source venv/bin/activate
 # Install Python packages
 pip install flask python-dotenv requests pyjwt
 
+#upload content from github with curl
+cd /opt/carey-waynium-api
+curl -o main.py https://raw.githubusercontent.com/olliris/carey-waynium-api/main/main.py
+
 # Instructions to finish manually
 echo "✅ Setup complete."
 echo "➡️ Next steps:"
