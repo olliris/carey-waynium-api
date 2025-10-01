@@ -1,365 +1,406 @@
-# main.py
+# main.py - Production Ready avec Queue Asynchrone
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from transform import transform_to_waynium, transform_payload  # alias conservé
-import os, re, json, logging, requests, jwt
+from transform import transform_to_waynium
+import os, json, logging, requests, jwt, hmac, hashlib
 from datetime import datetime
+from queue import Queue
+from threading import Thread
+import traceback
 
-# ---------------------------------- Config ----------------------------------
-WAYNIUM_API_URL    = os.getenv("WAYNIUM_API_URL", "https://stage-gdsapi.waynium.net/api-externe/set-ressource")
-WAYNIUM_API_KEY    = os.getenv("WAYNIUM_API_KEY", "abllimousines")  # << issu de la réunion
-WAYNIUM_API_SECRET = os.getenv("WAYNIUM_API_SECRET", "be5F47w72eGxwWe8EAZe9Y4vP38g2rRG")  # << secret fourni
-WEBHOOK_API_KEYS   = {k.strip() for k in os.getenv("WEBHOOK_API_KEYS", "1").split(",") if k.strip()}
-REQUEST_TIMEOUT    = float(os.getenv("REQUEST_TIMEOUT", "15"))
+# ============================= CONFIG =====================================
+WAYNIUM_API_URL = os.getenv("WAYNIUM_API_URL", "https://stage-gdsapi.waynium.net/api-externe/set-ressource")
+WAYNIUM_API_KEY = os.getenv("WAYNIUM_API_KEY", "abllimousines")
+WAYNIUM_API_SECRET = os.getenv("WAYNIUM_API_SECRET", "be5F47w72eGxwWe8EAZe9Y4vP38g2rRG")
+WEBHOOK_API_KEYS = {k.strip() for k in os.getenv("WEBHOOK_API_KEYS", "1").split(",") if k.strip()}
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "15"))
+ENABLE_QUEUE = os.getenv("ENABLE_QUEUE", "true").lower() == "true"
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 
-# --------------------------------- Flask app --------------------------------
+# ============================= FLASK APP ==================================
 app = Flask(__name__)
 CORS(app)
-logging.basicConfig(level=logging.INFO, format="%(message)s")
-log = logging.getLogger("carey-webhook")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+log = logging.getLogger("carey-waynium")
+
+# ============================= QUEUE ASYNC ================================
+webhook_queue = Queue() if ENABLE_QUEUE else None
+stats = {"received": 0, "success": 0, "failed": 0, "queued": 0}
 
 def log_json(level, **fields):
-    fields.setdefault("ts", datetime.utcnow().isoformat() + "Z")
+    """Log structuré JSON"""
+    fields["timestamp"] = datetime.utcnow().isoformat() + "Z"
     getattr(log, level)(json.dumps(fields, ensure_ascii=False))
 
-# ------------------------------ Compat helpers ------------------------------
-ENUM_MAPS = {
-    "tripType": {
-        "POINT-TO-POINT/CITY-TO-CITY": "POINT_TO_POINT",
-        "CITY_TO_CITY": "POINT_TO_POINT",
-        "POINT-TO-POINT": "POINT_TO_POINT",
-        "POINT TO POINT": "POINT_TO_POINT",
-        "POINT_TO_POINT": "POINT_TO_POINT",
-    },
-    "serviceLevel": {
-        "SERVICE +": "SERVICE_PLUS",
-        "SERVICE+": "SERVICE_PLUS",
-        "SERVICE PLUS": "SERVICE_PLUS",
-        "SERVICE_PLUS": "SERVICE_PLUS",
-    },
-}
-ENUM_UPPER_FIELDS = ["reservationSource", "serviceType", "vehicleType", "status", "locationType", "tripType", "paymentType"]
-PHONE_FIELDS = ["mobileNumber", "phoneNumber", "bookedByPhone"]
-
-def _force_utc_z(dt_str):
-    if isinstance(dt_str, str) and dt_str and not (dt_str.endswith("Z") or re.search(r"[+-]\d{2}:\d{2}$", dt_str)):
-        return dt_str + "Z"
-    return dt_str
-
-def _to_float(x):
-    try: return float(x)
-    except Exception: return x
-
-def _upper_enum(v, field):
-    if not isinstance(v, str): return v
-    u = v.strip().upper()
-    if field in ENUM_MAPS and u in ENUM_MAPS[field]: return ENUM_MAPS[field][u]
-    return u
-
-def _clean_phone(p):
-    if not isinstance(p, str): return p
-    p2 = re.sub(r"[^\d+]", "", p)
-    return ("+" + re.sub(r"[^\d]", "", p2[1:])) if p2.startswith("+") else re.sub(r"[^\d]", "", p2)
-
-def _normalize_location_type(v):
-    if not isinstance(v, str): return v
-    u = v.strip().upper()
-    if u in {"AIRPORT","HOTEL","ADDRESS","PORT","STATION"}: return u
-    if u in {"TRANSPORTATIONCENTER","TRANSPORTATION_CENTER"}: return "AIRPORT"
-    return u
-
-def _recompute_domestic(tcd: dict):
-    if not isinstance(tcd, dict): return
-    src = (tcd.get("source") or "").upper()
-    arr = (tcd.get("transportationCenterCode") or "").upper()
-    if arr == "BRU" and src and src != "BRU":
-        tcd["domestic"] = False
-
-def normalize_payload(data: dict, headers: dict):
-    """
-    Retourne (normalized_data, effective_api_key, corrections_appliquees)
-    """
-    corr = []
-    if not isinstance(data, dict):
-        return data, None, corr
-
-    # Auth: header ou body (legacy)
-    api_key = None
-    for hk in ("x-api-key","X-API-KEY","authorization","Authorization"):
-        if hk in headers and headers[hk]:
-            val = str(headers[hk])
-            if hk.lower().startswith("authorization") and val.lower().startswith("bearer "):
-                api_key = val.split(" ",1)[1].strip(); corr.append("auth:Authorization->Bearer")
-            else:
-                api_key = val.strip(); corr.append(f"auth:{hk}")
-            break
-    if not api_key and "apiKey" in data and data["apiKey"]:
-        api_key = str(data["apiKey"]).strip(); corr.append("auth:body.apiKey")
-    data["_effectiveApiKey"] = api_key
-
-    # publishTime
-    if "publishTime" in data:
-        old = data["publishTime"]
-        data["publishTime"] = _force_utc_z(data["publishTime"])
-        if data["publishTime"] != old: corr.append("publishTime:+Z")
-
-    trip = data.get("trip") or {}
-    data["trip"] = trip
-
-    # enums top-level
-    for f in ENUM_UPPER_FIELDS:
-        if f in trip and trip[f] is not None:
-            old = trip[f]; trip[f] = _upper_enum(trip[f], f)
-            if trip[f] != old: corr.append(f"{f}:{old}→{trip[f]}")
-
-    # passengerDetails
-    if isinstance(trip.get("passengerDetails"), dict):
-        pd = trip["passengerDetails"]
-        if "serviceLevel" in pd and pd["serviceLevel"] is not None:
-            old = pd["serviceLevel"]; pd["serviceLevel"] = _upper_enum(pd["serviceLevel"], "serviceLevel")
-            if pd["serviceLevel"] != old: corr.append(f"serviceLevel:{old}→{pd['serviceLevel']}")
-        for pf in PHONE_FIELDS:
-            if pf in pd and pd[pf]:
-                old = pd[pf]; pd[pf] = _clean_phone(pd[pf])
-                if pd[pf] != old: corr.append(f"passengerDetails.{pf}:cleaned")
-
-    # pickUpDetails
-    if isinstance(trip.get("pickUpDetails"), dict):
-        pu = trip["pickUpDetails"]
-        if "locationType" in pu and pu["locationType"]:
-            old = pu["locationType"]; pu["locationType"] = _normalize_location_type(pu["locationType"])
-            if pu["locationType"] != old: corr.append(f"pickUpDetails.locationType:{old}→{pu['locationType']}")
-        if "pickUpTime" in pu and pu["pickUpTime"]:
-            old = pu["pickUpTime"]; pu["pickUpTime"] = _force_utc_z(pu["pickUpTime"])
-            if pu["pickUpTime"] != old: corr.append("pickUpTime:+Z")
-        for k in ("puLatitude","puLongitude"):
-            if k in pu and isinstance(pu[k], str):
-                old = pu[k]; pu[k] = _to_float(pu[k])
-                if pu[k] != old: corr.append(f"{k}:toFloat")
-        tcd = pu.get("transportationCenterDetails")
-        if isinstance(tcd, dict):
-            before = tcd.get("domestic"); _recompute_domestic(tcd); after = tcd.get("domestic")
-            if before != after: corr.append("transportationCenterDetails.domestic:recomputed")
-
-    # dropOffDetails
-    if isinstance(trip.get("dropOffDetails"), dict):
-        do = trip["dropOffDetails"]
-        if "locationType" in do and do["locationType"]:
-            old = do["locationType"]; do["locationType"] = _normalize_location_type(do["locationType"])
-            if do["locationType"] != old: corr.append(f"dropOffDetails.locationType:{old}→{do['locationType']}")
-        for k in ("doLatitude","doLongitude"):
-            if k in do and isinstance(do[k], str):
-                old = do[k]; do[k] = _to_float(do[k])
-                if do[k] != old: corr.append(f"{k}:toFloat")
-        ad = do.get("addressDetails")
-        if isinstance(ad, dict):
-            city = (ad.get("city") or "").strip().lower()
-            cc = (ad.get("countryCode") or ad.get("country") or "").strip().upper()
-            if city == "brussels" and cc == "BE" and not ad.get("postalCode"):
-                ad["postalCode"] = "1000"; corr.append("addressDetails.postalCode:default(1000)")
-
-    # trip-level times/phones
-    if "updateTime" in trip and trip["updateTime"]:
-        old = trip["updateTime"]; trip["updateTime"] = _force_utc_z(trip["updateTime"])
-        if trip["updateTime"] != old: corr.append("updateTime:+Z")
-    for pf in PHONE_FIELDS:
-        if pf in trip and trip[pf]:
-            old = trip[pf]; trip[pf] = _clean_phone(trip[pf])
-            if trip[pf] != old: corr.append(f"{pf}:cleaned")
-
-    # reservationPreferences fallback
-    if isinstance(trip.get("reservationPreferences"), list):
-        for pref in trip["reservationPreferences"]:
-            if isinstance(pref, dict):
-                t = pref.get("type")
-                if not isinstance(t, str) or t.strip().upper() not in {"NOTE","INSTRUCTION"}:
-                    pref["type"] = "NOTE"
-
-    return data, api_key, corr
-
-def validate_minimal(data: dict):
-    errs = []
-    trip = data.get("trip")
-    if not isinstance(trip, dict):
-        return False, ["missing trip"]
-
-    required = [
-        ("trip.reservationNumber", trip.get("reservationNumber")),
-        ("trip.status", trip.get("status")),
-        ("trip.tripType", trip.get("tripType")),
-        ("trip.serviceType", trip.get("serviceType")),
-        ("trip.vehicleType", trip.get("vehicleType")),
-        ("trip.pickUpDetails", trip.get("pickUpDetails")),
-        ("trip.dropOffDetails", trip.get("dropOffDetails")),
-    ]
-    for name, val in required:
-        if val in (None, "", {}): errs.append(f"missing {name}")
-
-    pu = trip.get("pickUpDetails", {})
-    if isinstance(pu, dict) and not pu.get("pickUpTime"):
-        errs.append("missing trip.pickUpDetails.pickUpTime")
-
-    return (len(errs) == 0), errs
-
-# ---------------------- Détection schéma & conversions ----------------------
-def is_carey_v2(payload: dict) -> bool:
-    return isinstance(payload, dict) and (
-        "pickup" in payload or "dropoff" in payload or "passenger" in payload or "reservationId" in payload
-    )
-
-def trip_to_waynium(trip: dict) -> dict:
-    pd = trip.get("passengerDetails", {}) or {}
-    pu = trip.get("pickUpDetails", {}) or {}
-    do = trip.get("dropOffDetails", {}) or {}
-    tcd = pu.get("transportationCenterDetails", {}) or {}
-    ad = (do.get("addressDetails") or {}) if isinstance(do.get("addressDetails"), dict) else {}
-
-    def up(x): 
-        return x.upper().replace(" ", "_") if isinstance(x, str) else x
-
-    return {
-        "booking_reference": trip.get("reservationNumber",""),
-        "created_by": trip.get("bookedBy",""),
-        "reservation_source": trip.get("reservationSource",""),
-        "supplier_id": trip.get("serviceProvider",""),
-        "account_name": trip.get("accountName",""),
-
-        "passenger_first_name": pd.get("firstName",""),
-        "passenger_last_name": pd.get("lastName",""),
-        "passenger_email": pd.get("emailAddress",""),
-        "passenger_mobile": pd.get("mobileNumber",""),
-        "service_level": up(pd.get("serviceLevel","SERVICE_PLUS")),
-        "passenger_count": pd.get("passengerCount") or 1,
-
-        "pickup_time": pu.get("pickUpTime",""),
-        "pickup_location_type": up(pu.get("locationType","ADDRESS")),
-        "pickup_instructions": pu.get("locationInstructions",""),
-        "pickup_latitude": pu.get("puLatitude"),
-        "pickup_longitude": pu.get("puLongitude"),
-        "pickup_transport_center_name": tcd.get("transportationCenterName",""),
-        "pickup_transport_center_code": tcd.get("transportationCenterCode",""),
-        "pickup_carrier_name": tcd.get("carrierName",""),
-        "pickup_carrier_code": tcd.get("carrierCode",""),
-        "pickup_carrier_number": tcd.get("carrierNumber",""),
-        "pickup_source": tcd.get("source",""),
-        "pickup_domestic": bool(tcd.get("domestic", False)),
-        "pickup_private_aviation": bool(tcd.get("privateAviation", False)),
-
-        "dropoff_address": ad.get("addressLine1") or do.get("address",""),
-        "dropoff_city": ad.get("city") or do.get("city",""),
-        "dropoff_postal_code": ad.get("postalCode") or do.get("postalCode",""),
-        "dropoff_country_code": ad.get("countryCode") or do.get("country",""),
-        "dropoff_latitude": do.get("doLatitude"),
-        "dropoff_longitude": do.get("doLongitude"),
-
-        "service_type": up(trip.get("serviceType","PREMIUM")),
-        "trip_type": up(trip.get("tripType","POINT_TO_POINT")),
-        "vehicle_type": up(trip.get("vehicleType","EXECUTIVE_SEDAN")),
-        "bags": trip.get("bagsCount") or 0,
-        "pickup_sign": trip.get("pickupSign",""),
-        "greeter_requested": bool(trip.get("greeterRequested", False)),
-
-        "payment_method": up(trip.get("paymentType","ACCOUNT")),
-        "price_total": None,
-        "price_currency": None,
-        "price_tax_included": True,
-
-        "booked_by": trip.get("bookedBy",""),
-        "booked_by_phone": trip.get("bookedByPhone",""),
-        "trip_status": up(trip.get("status","OPEN")),
-        "notes": "",
-
-        "reservation_version": trip.get("reservationVersion") or 1,
-        "update_time": trip.get("updateTime",""),
-        "meta_created": "",
-        "meta_source": "CAREY_TRIP_LEGACY",
-
-        "city": ad.get("city") or do.get("city",""),
-    }
-
-# --------------------------- Waynium JWT headers ----------------------------
-def _waynium_headers(_body_bytes: bytes) -> dict:
-    """
-    Authentification JWT Waynium: Authorization: Bearer <token>
-    token = HS256( payload={iss: WAYNIUM_API_KEY, iat: now}, secret=WAYNIUM_API_SECRET )
-    """
+def generate_jwt_token() -> str:
+    """Génère un token JWT pour Waynium"""
     payload = {
         "iss": WAYNIUM_API_KEY,
         "iat": int(datetime.utcnow().timestamp())
     }
-    token = jwt.encode(payload, WAYNIUM_API_SECRET, algorithm="HS256")
-    return {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    return jwt.encode(payload, WAYNIUM_API_SECRET, algorithm="HS256")
 
-# ---------------------------------- Routes ----------------------------------
-@app.post("/carey/webhook")
-def carey_webhook():
+def send_to_waynium(payload: dict, attempt: int = 1) -> tuple[bool, dict]:
+    """
+    Envoie vers Waynium avec retry automatique
+    Returns: (success: bool, response: dict)
+    """
     try:
-        raw = request.get_data(as_text=True)
-        incoming = request.get_json(silent=True)
-        if incoming is None:
-            log_json("warning", event="parse_error", raw=raw[:2000])
-            return jsonify({"status":"error","code":996,"message":"invalid JSON (parse error)"}), 400
-
-        normalized, effective_key, corrections = normalize_payload(incoming, dict(request.headers))
-
-        # Auth entrée webhook
-        if not effective_key or effective_key not in WEBHOOK_API_KEYS:
-            log_json("warning", event="auth_invalid")
-            return jsonify({"status":"error","message":"Missing or invalid API key"}), 401
-
-        # Carey v2 (pickup/dropoff/passenger…)
-        if is_carey_v2(incoming):
-            try:
-                waynium_payload = transform_to_waynium(incoming)
-            except Exception as te:
-                log_json("error", event="transform_error_v2", error=str(te))
-                return jsonify({"status":"error","code":996,"message":"transform_error_v2",
-                                "errors":[str(te)],"correctionsApplied":corrections}), 400
-        # Carey legacy trip.*
+        stats["received"] += 1
+        transaction_id = f"TXN-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{stats['received']}"
+        
+        # Parse payload
+        raw_data = request.get_data()
+        try:
+            carey_payload = request.get_json(force=True)
+        except Exception as e:
+            log_json("error", event="json_parse_error", transaction_id=transaction_id, error=str(e))
+            return jsonify({
+                "status": "error",
+                "code": 400,
+                "message": "Invalid JSON payload"
+            }), 400
+        
+        # Authentification
+        api_key = extract_api_key(dict(request.headers), carey_payload)
+        if not api_key or api_key not in WEBHOOK_API_KEYS:
+            log_json("warning", 
+                event="auth_failed",
+                transaction_id=transaction_id,
+                provided_key=api_key[:8] + "..." if api_key else None
+            )
+            return jsonify({
+                "status": "error",
+                "message": "Missing or invalid API key"
+            }), 401
+        
+        # Validation signature (optionnelle)
+        signature = request.headers.get("X-Carey-Signature")
+        if signature and not validate_carey_signature(raw_data, signature):
+            log_json("warning", event="signature_invalid", transaction_id=transaction_id)
+            return jsonify({
+                "status": "error",
+                "message": "Invalid signature"
+            }), 401
+        
+        # Log réception
+        log_json("info",
+            event="carey_webhook_received",
+            transaction_id=transaction_id,
+            reservation_ref=carey_payload.get("reservationNumber") or 
+                          carey_payload.get("reservationId") or
+                          carey_payload.get("trip", {}).get("reservationNumber", "unknown")
+        )
+        
+        # Mode asynchrone: mise en queue
+        if ENABLE_QUEUE:
+            task = {
+                "transaction_id": transaction_id,
+                "payload": carey_payload,
+                "received_at": datetime.utcnow().isoformat() + "Z"
+            }
+            webhook_queue.put(task)
+            stats["queued"] += 1
+            
+            log_json("info", 
+                event="queued",
+                transaction_id=transaction_id,
+                queue_size=webhook_queue.qsize()
+            )
+            
+            resp = jsonify({
+                "status": "accepted",
+                "transaction_id": transaction_id,
+                "queued": True,
+                "queue_size": webhook_queue.qsize()
+            })
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            return resp, 202
+        
+        # Mode synchrone: traitement immédiat
+        try:
+            waynium_payload = transform_to_waynium(carey_payload)
+        except Exception as e:
+            log_json("error",
+                event="transform_error",
+                transaction_id=transaction_id,
+                error=str(e),
+                trace=traceback.format_exc()
+            )
+            return jsonify({
+                "status": "error",
+                "code": 996,
+                "message": "Transformation error",
+                "details": str(e)
+            }), 400
+        
+        # Envoi vers Waynium
+        success, response = send_to_waynium(waynium_payload)
+        
+        if success:
+            stats["success"] += 1
+            resp = jsonify({
+                "status": "success",
+                "transaction_id": transaction_id,
+                "waynium_response": response
+            })
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            return resp, 200
         else:
-            ok, errors = validate_minimal(normalized)
-            if not ok:
-                log_json("warning", event="validation_failed", errors=errors, corr=corrections)
-                return jsonify({"status":"error","code":996,"message":"Validation failed",
-                                "errors":errors,"correctionsApplied":corrections}), 400
-            try:
-                waynium_payload = trip_to_waynium(normalized.get("trip", {}))
-            except Exception as te:
-                log_json("error", event="transform_error_trip", error=str(te))
-                return jsonify({"status":"error","code":996,"message":"transform_error_trip",
-                                "errors":[str(te)],"correctionsApplied":corrections}), 400
-
-        # Envoi vers Waynium (JWT)
-        body_str = json.dumps(waynium_payload, ensure_ascii=False)
-        headers = _waynium_headers(body_str.encode("utf-8"))
-        r = requests.post(WAYNIUM_API_URL, data=body_str.encode("utf-8"), headers=headers, timeout=REQUEST_TIMEOUT)
-
-        if r.status_code in (200, 201):
-            try:
-                body = r.json()
-            except Exception:
-                body = {"raw": r.text}
-            return jsonify({"status":"success","waynium_response":body,"correctionsApplied":corrections}), 200
-
-        return jsonify({"status":"upstream_error","upstream":"waynium","code":r.status_code,"response":r.text}), 502 if r.status_code < 500 else r.status_code
-
+            stats["failed"] += 1
+            resp = jsonify({
+                "status": "upstream_error",
+                "transaction_id": transaction_id,
+                "upstream": "waynium",
+                "waynium_response": response
+            })
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            return resp, 502
+            
     except Exception as e:
-        log_json("error", event="unhandled_exception", error=str(e))
-        return jsonify({"status":"error","message":str(e)}), 500
+        log_json("error",
+            event="unhandled_exception",
+            error=str(e),
+            trace=traceback.format_exc()
+        )
+        return jsonify({
+            "status": "error",
+            "message": "Internal server error",
+            "details": str(e)
+        }), 500
 
-@app.get("/healthz")
+@app.route("/healthz", methods=["GET"])
 def healthz():
-    return jsonify({"ok": True, "ts": datetime.utcnow().isoformat() + "Z"}), 200
+    """Health check simple"""
+    return jsonify({
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }), 200
 
-@app.get("/readyz")
+@app.route("/readyz", methods=["GET"])
 def readyz():
-    ready = bool(WAYNIUM_API_KEY and WAYNIUM_API_SECRET and WAYNIUM_API_URL)
-    return jsonify({"ready": ready}), 200 if ready else 503
+    """Readiness check avec vérification config"""
+    checks = {
+        "config_loaded": bool(WAYNIUM_API_KEY and WAYNIUM_API_SECRET),
+        "waynium_url": WAYNIUM_API_URL,
+        "queue_enabled": ENABLE_QUEUE,
+        "queue_size": webhook_queue.qsize() if ENABLE_QUEUE else 0,
+        "stats": stats
+    }
+    
+    ready = checks["config_loaded"]
+    return jsonify(checks), 200 if ready else 503
 
-@app.get("/version")
+@app.route("/stats", methods=["GET"])
+def get_stats():
+    """Statistiques du service"""
+    return jsonify({
+        "stats": stats,
+        "queue_size": webhook_queue.qsize() if ENABLE_QUEUE else 0,
+        "queue_enabled": ENABLE_QUEUE,
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }), 200
+
+@app.route("/version", methods=["GET"])
 def version():
-    return jsonify({"name":"carey-waynium-api","version":os.getenv("VERSION","1.0.0"),"time":datetime.utcnow().isoformat()+"Z"}), 200
+    """Version de l'API"""
+    return jsonify({
+        "name": "carey-waynium-api",
+        "version": os.getenv("VERSION", "2.0.0"),
+        "waynium_url": WAYNIUM_API_URL,
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }), 200
 
-# -------------------------------- Entrypoint -------------------------------
+# ========================== ENTRYPOINT ====================================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT","5000")))
+    port = int(os.getenv("PORT", "5000"))
+    debug = os.getenv("DEBUG", "false").lower() == "true"
+    
+    log.info(f"Starting Carey→Waynium API on port {port}")
+    log.info(f"Waynium URL: {WAYNIUM_API_URL}")
+    log.info(f"Queue mode: {'enabled' if ENABLE_QUEUE else 'disabled'}")
+    log.info(f"Max retries: {MAX_RETRIES}")
+    
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=debug
+    ):
+        body_str = json.dumps(payload, ensure_ascii=False)
+        token = generate_jwt_token()
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Authorization": f"Bearer {token}"
+        }
+        
+        log_json("info", 
+            event="waynium_request",
+            attempt=attempt,
+            ref=payload.get("params", {}).get("C_Gen_Client", [{}])[0]
+                .get("C_Com_Commande", [{}])[0].get("ref", "unknown")
+        )
+        
+        r = requests.post(
+            WAYNIUM_API_URL,
+            data=body_str.encode("utf-8"),
+            headers=headers,
+            timeout=REQUEST_TIMEOUT
+        )
+        
+        # Parse response
+        try:
+            resp_data = r.json()
+        except:
+            resp_data = {"raw": r.text}
+        
+        if r.status_code in (200, 201):
+            log_json("info", 
+                event="waynium_success",
+                status=r.status_code,
+                response=resp_data
+            )
+            return True, resp_data
+        
+        # Erreur Waynium
+        log_json("warning",
+            event="waynium_error",
+            status=r.status_code,
+            response=resp_data,
+            attempt=attempt
+        )
+        
+        # Retry si < MAX_RETRIES et erreur 5xx
+        if attempt < MAX_RETRIES and r.status_code >= 500:
+            log_json("info", event="waynium_retry", attempt=attempt+1)
+            return send_to_waynium(payload, attempt + 1)
+        
+        return False, {
+            "error": "waynium_rejected",
+            "status": r.status_code,
+            "response": resp_data
+        }
+        
+    except requests.exceptions.Timeout:
+        log_json("error", event="waynium_timeout", attempt=attempt)
+        if attempt < MAX_RETRIES:
+            return send_to_waynium(payload, attempt + 1)
+        return False, {"error": "timeout"}
+        
+    except Exception as e:
+        log_json("error", event="waynium_exception", error=str(e), trace=traceback.format_exc())
+        return False, {"error": str(e)}
+
+def process_webhook_task(task: dict):
+    """Traite une tâche de la queue"""
+    try:
+        carey_payload = task["payload"]
+        transaction_id = task["transaction_id"]
+        
+        log_json("info", 
+            event="queue_processing",
+            transaction_id=transaction_id
+        )
+        
+        # Transformation Carey → Waynium
+        waynium_payload = transform_to_waynium(carey_payload)
+        
+        # Envoi vers Waynium
+        success, response = send_to_waynium(waynium_payload)
+        
+        if success:
+            stats["success"] += 1
+            log_json("info",
+                event="webhook_success",
+                transaction_id=transaction_id
+            )
+        else:
+            stats["failed"] += 1
+            log_json("error",
+                event="webhook_failed",
+                transaction_id=transaction_id,
+                waynium_response=response
+            )
+            
+    except Exception as e:
+        stats["failed"] += 1
+        log_json("error",
+            event="queue_task_exception",
+            error=str(e),
+            trace=traceback.format_exc()
+        )
+
+def queue_worker():
+    """Worker thread pour traiter la queue en continu"""
+    log.info("Queue worker started")
+    while True:
+        try:
+            task = webhook_queue.get()
+            process_webhook_task(task)
+            webhook_queue.task_done()
+        except Exception as e:
+            log_json("error", event="queue_worker_exception", error=str(e))
+
+# Démarrage worker si queue activée
+if ENABLE_QUEUE:
+    worker_thread = Thread(target=queue_worker, daemon=True)
+    worker_thread.start()
+    log.info("Async queue enabled")
+
+# ========================== AUTH HELPERS ==================================
+def extract_api_key(headers: dict, body: dict) -> str:
+    """Extrait l'API key depuis headers ou body"""
+    # Priorité: headers
+    for hk in ("x-api-key", "X-API-KEY", "authorization", "Authorization"):
+        if hk in headers and headers[hk]:
+            val = str(headers[hk])
+            if hk.lower().startswith("authorization"):
+                if val.lower().startswith("bearer "):
+                    return val.split(" ", 1)[1].strip()
+                elif val.lower().startswith("apikey "):
+                    return val.split(" ", 1)[1].strip()
+            else:
+                return val.strip()
+    
+    # Fallback: body
+    if isinstance(body, dict) and body.get("apiKey"):
+        return str(body["apiKey"]).strip()
+    
+    return None
+
+def validate_carey_signature(payload_bytes: bytes, signature: str) -> bool:
+    """Valide la signature HMAC du webhook Carey (si activé)"""
+    secret = os.getenv("CAREY_WEBHOOK_SECRET")
+    if not secret:
+        return True  # Skip validation si pas configuré
+    
+    expected = hmac.new(
+        secret.encode(),
+        payload_bytes,
+        hashlib.sha256
+    ).hexdigest()
+    
+    return hmac.compare_digest(expected, signature)
+
+# ========================== ROUTES ========================================
+@app.route("/carey/webhook", methods=["POST", "OPTIONS"])
+def carey_webhook():
+    """
+    Endpoint principal pour recevoir les webhooks Carey
+    
+    Mode synchrone (ENABLE_QUEUE=false): traitement immédiat, réponse après Waynium
+    Mode asynchrone (ENABLE_QUEUE=true): mise en queue, réponse immédiate 202
+    """
+    
+    # CORS preflight
+    if request.method == "OPTIONS":
+        resp = jsonify({"ok": True})
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-API-Key"
+        return resp, 204
+    
+    try
