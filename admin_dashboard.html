@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Carey→Waynium API - Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f7fa;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 30px;
+            font-size: 28px;
+        }
+        .status-card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .status-card h2 {
+            font-size: 16px;
+            color: #7f8c8d;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .status-value {
+            font-size: 32px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .status-green { color: #27ae60; }
+        .status-red { color: #e74c3c; }
+        .status-orange { color: #f39c12; }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .mappings-section {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .mappings-section h2 {
+            margin-bottom: 15px;
+            color: #2c3e50;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ecf0f1;
+        }
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .badge-success { background: #d4edda; color: #155724; }
+        .badge-danger { background: #f8d7da; color: #721c24; }
+        .badge-warning { background: #fff3cd; color: #856404; }
+        .badge-info { background: #d1ecf1; color: #0c5460; }
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            margin-right: 10px;
+        }
+        button:hover {
+            background: #2980b9;
+        }
+        button.danger {
+            background: #e74c3c;
+        }
+        button.danger:hover {
+            background: #c0392b;
+        }
+        .log-entry {
+            padding: 10px;
+            margin-bottom: 5px;
+            border-left: 3px solid #3498db;
+            background: #f8f9fa;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+        .log-error { border-left-color: #e74c3c; }
+        .log-warning { border-left-color: #f39c12; }
+        .test-section {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        textarea {
+            width: 100%;
+            min-height: 200px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+        .response-box {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚗 Carey→Waynium API Dashboard</h1>
+        
+        <!-- Stats Grid -->
+        <div class="grid">
+            <div class="status-card">
+                <h2>Status</h2>
+                <div class="status-value" id="status">...</div>
+            </div>
+            <div class="status-card">
+                <h2>Réservations Reçues</h2>
+                <div class="status-value" id="received">0</div>
+            </div>
+            <div class="status-card">
+                <h2>Succès</h2>
+                <div class="status-value status-green" id="success">0</div>
+            </div>
+            <div class="status-card">
+                <h2>Échecs</h2>
+                <div class="status-value status-red" id="failed">0</div>
+            </div>
+            <div class="status-card">
+                <h2>En Queue</h2>
+                <div class="status-value status-orange" id="queued">0</div>
+            </div>
+            <div class="status-card">
+                <h2>Version</h2>
+                <div class="status-value" style="font-size: 24px;" id="version">-</div>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="status-card">
+            <h2>Actions Rapides</h2>
+            <button onclick="refreshStats()">🔄 Rafraîchir Stats</button>
+            <button onclick="testHealth()">❤️ Health Check</button>
+            <button onclick="showLogs()">📋 Voir Logs</button>
+            <button class="danger" onclick="clearStats()">🗑️ Réinitialiser Stats</button>
+        </div>
+
+        <!-- Test Webhook -->
+        <div class="test-section">
+            <h2>🧪 Test Webhook</h2>
+            <p style="margin-bottom: 10px; color: #7f8c8d;">Envoyez un payload de test vers l'API</p>
+            
+            <textarea id="testPayload" placeholder="Collez votre payload JSON Carey ici...">{
+  "reservationNumber": "DASHBOARD-TEST-001",
+  "passenger": {
+    "firstName": "Test",
+    "lastName": "Dashboard",
+    "mobile": "+33600000000",
+    "email": "test@example.com"
+  },
+  "pickup": {
+    "time": "2025-12-01T10:00:00Z",
+    "locationType": "Airport",
+    "city": "Paris",
+    "country": "FR",
+    "transportationCenterDetails": {
+      "transportationCenterCode": "CDG"
+    }
+  },
+  "dropoff": {
+    "address": "1 Rue de Test",
+    "city": "Lyon",
+    "country": "FR"
+  },
+  "service": {
+    "type": "Airport",
+    "vehicleType": "Sedan"
+  },
+  "status": "Confirmed"
+}</textarea>
+            
+            <div style="margin-top: 10px;">
+                <button onclick="sendTestWebhook()">📤 Envoyer Test</button>
+                <button onclick="testCancellation()">❌ Test Annulation</button>
+            </div>
+            
+            <div class="response-box" id="testResponse" style="display:none;">
+                <h3>Réponse:</h3>
+                <pre id="responseContent"></pre>
+            </div>
+        </div>
+
+        <!-- Mappings Info -->
+        <div class="mappings-section">
+            <h2>🗺️ Mappings Configurés</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>Carey Code</th>
+                        <th>Waynium ID</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Véhicule</td>
+                        <td>SEDAN, EXECUTIVE_SEDAN</td>
+                        <td>1</td>
+                        <td><span class="badge badge-success">Actif</span></td>
+                    </tr>
+                    <tr>
+                        <td>Véhicule</td>
+                        <td>VAN, MINIVAN</td>
+                        <td>2</td>
+                        <td><span class="badge badge-success">Actif</span></td>
+                    </tr>
+                    <tr>
+                        <td>Service</td>
+                        <td>AIRPORT, AIRPORT_TRANSFER</td>
+                        <td>1</td>
+                        <td><span class="badge badge-success">Actif</span></td>
+                    </tr>
+                    <tr>
+                        <td>Client</td>
+                        <td>Carey Belgium</td>
+                        <td>320</td>
+                        <td><span class="badge badge-success">Actif</span></td>
+                    </tr>
+                </tbody>
+            </table>
+            <p style="margin-top: 15px; color: #7f8c8d; font-size: 14px;">
+                💡 Pour modifier les mappings : <code>nano /opt/carey-waynium-api/waynium_mappings.py</code>
+            </p>
+        </div>
+
+        <!-- Recent Activity -->
+        <div class="mappings-section">
+            <h2>📊 Activité Récente</h2>
+            <div id="recentActivity">
+                <p style="color: #95a5a6;">Chargement...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+
+        // Charger les stats au démarrage
+        document.addEventListener('DOMContentLoaded', () => {
+            refreshStats();
+            setInterval(refreshStats, 10000); // Refresh toutes les 10s
+        });
+
+        async function refreshStats() {
+            try {
+                // Stats
+                const statsRes = await fetch(`${API_BASE}/stats`);
+                const stats = await statsRes.json();
+                
+                document.getElementById('received').textContent = stats.stats.received || 0;
+                document.getElementById('success').textContent = stats.stats.success || 0;
+                document.getElementById('failed').textContent = stats.stats.failed || 0;
+                document.getElementById('queued').textContent = stats.queue_size || 0;
+
+                // Version
+                const versionRes = await fetch(`${API_BASE}/version`);
+                const version = await versionRes.json();
+                document.getElementById('version').textContent = version.version || '-';
+
+                // Health
+                const healthRes = await fetch(`${API_BASE}/healthz`);
+                const statusEl = document.getElementById('status');
+                if (healthRes.ok) {
+                    statusEl.textContent = '✅ OK';
+                    statusEl.className = 'status-value status-green';
+                } else {
+                    statusEl.textContent = '❌ ERROR';
+                    statusEl.className = 'status-value status-red';
+                }
+
+                // Activité récente (simulée)
+                updateRecentActivity(stats);
+
+            } catch (error) {
+                console.error('Erreur refresh stats:', error);
+                document.getElementById('status').textContent = '⚠️ Erreur';
+                document.getElementById('status').className = 'status-value status-orange';
+            }
+        }
+
+        async function testHealth() {
+            try {
+                const res = await fetch(`${API_BASE}/readyz`);
+                const data = await res.json();
+                alert(`Health Check:\n\n${JSON.stringify(data, null, 2)}`);
+            } catch (error) {
+                alert(`Erreur: ${error.message}`);
+            }
+        }
+
+        async function sendTestWebhook() {
+            const payload = document.getElementById('testPayload').value;
+            
+            try {
+                const json = JSON.parse(payload);
+                
+                const res = await fetch(`${API_BASE}/carey/webhook`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': '1'
+                    },
+                    body: JSON.stringify(json)
+                });
+
+                const responseData = await res.json();
+                
+                document.getElementById('testResponse').style.display = 'block';
+                document.getElementById('responseContent').textContent = 
+                    JSON.stringify(responseData, null, 2);
+                
+                setTimeout(refreshStats, 1000);
+                
+            } catch (error) {
+                alert(`Erreur: ${error.message}`);
+            }
+        }
+
+        async function testCancellation() {
+            const payload = {
+                "reservationNumber": "CANCEL-TEST-001",
+                "status": "CANCELLED"
+            };
+            
+            try {
+                const res = await fetch(`${API_BASE}/carey/webhook`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': '1'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const responseData = await res.json();
+                
+                document.getElementById('testResponse').style.display = 'block';
+                document.getElementById('responseContent').textContent = 
+                    JSON.stringify(responseData, null, 2);
+                
+                setTimeout(refreshStats, 1000);
+                
+            } catch (error) {
+                alert(`Erreur: ${error.message}`);
+            }
+        }
+
+        function showLogs() {
+            alert('Pour voir les logs en temps réel:\n\nssh root@46.255.164.90\njournalctl -u carey_api.service -f');
+        }
+
+        function clearStats() {
+            if (confirm('Êtes-vous sûr de vouloir réinitialiser les statistiques ?')) {
+                alert('Fonctionnalité non implémentée.\nRedémarrez le service pour réinitialiser:\n\nsystemctl restart carey_api.service');
+            }
+        }
+
+        function updateRecentActivity(stats) {
+            const activityEl = document.getElementById('recentActivity');
+            const successRate = stats.stats.received > 0 
+                ? ((stats.stats.success / stats.stats.received) * 100).toFixed(1)
+                : 0;
+            
+            activityEl.innerHTML = `
+                <div class="log-entry">
+                    <strong>Taux de succès:</strong> ${successRate}% 
+                    (${stats.stats.success} succès sur ${stats.stats.received} reçus)
+                </div>
+                <div class="log-entry ${stats.stats.failed > 0 ? 'log-error' : ''}">
+                    <strong>Échecs totaux:</strong> ${stats.stats.failed}
+                </div>
+                <div class="log-entry ${stats.queue_size > 10 ? 'log-warning' : ''}">
+                    <strong>Queue actuelle:</strong> ${stats.queue_size} élément(s)
+                    ${stats.queue_size > 10 ? ' ⚠️ Queue élevée' : ''}
+                </div>
+                <div class="log-entry badge-info">
+                    <strong>Mode:</strong> ${stats.queue_enabled ? 'Asynchrone (Queue activée)' : 'Synchrone'}
+                </div>
+            `;
+        }
+    </script>
+</body>
+</html>
