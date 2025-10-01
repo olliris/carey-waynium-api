@@ -1,0 +1,21 @@
+# requirements.txt - Dépendances Python
+
+# Flask web framework
+Flask==3.0.0
+flask-cors==4.0.0
+
+# HTTP requests
+requests==2.31.0
+
+# JWT authentication
+PyJWT==2.8.0
+
+# Environment variables
+python-dotenv==1.0.0
+
+# Testing (optionnel)
+pytest==7.4.3
+pytest-cov==4.1.0
+
+# Production WSGI server (recommandé)
+gunicorn==21.2.0
