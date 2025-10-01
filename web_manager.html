@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Server Manager - Carey API</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        /* Sidebar */
+        .sidebar {
+            width: 300px;
+            background: #252526;
+            border-right: 1px solid #3e3e42;
+            display: flex;
+            flex-direction: column;
+        }
+        .sidebar-header {
+            padding: 15px;
+            background: #323233;
+            border-bottom: 1px solid #3e3e42;
+        }
+        .sidebar-header h1 {
+            font-size: 16px;
+            color: #cccccc;
+        }
+        .file-tree {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        .tree-item {
+            padding: 6px 10px;
+            cursor: pointer;
+            border-radius: 3px;
+            margin: 2px 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .tree-item:hover {
+            background: #2a2d2e;
+        }
+        .tree-item.selected {
+            background: #094771;
+        }
+        .tree-item.folder {
+            font-weight: 600;
+            color: #cccccc;
+        }
+        .tree-item.file {
+            color: #9cdcfe;
+        }
+        .icon {
+            width: 16px;
+            height: 16px;
+            display: inline-block;
+        }
+        
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        /* Toolbar */
+        .toolbar {
+            background: #323233;
+            padding: 10px 15px;
+            border-bottom: 1px solid #3e3e42;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .btn {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .btn:hover {
+            background: #1177bb;
+        }
+        .btn.danger {
+            background: #d32f2f;
+        }
+        .btn.danger:hover {
+            background: #f44336;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .breadcrumb {
+            flex: 1;
+            color: #858585;
+            font-size: 13px;
+        }
+        
+        /* Editor */
+        .editor-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #1e1e1e;
+        }
+        .tabs {
+            background: #2d2d2d;
+            display: flex;
+            border-bottom: 1px solid #3e3e42;
+            overflow-x: auto;
+        }
+        .tab {
+            padding: 8px 15px;
+            cursor: pointer;
+            border-right: 1px solid #3e3e42;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .tab:hover {
+            background: #323233;
+        }
+        .tab.active {
+            background: #1e1e1e;
+        }
+        .tab-close {
+            cursor: pointer;
+            opacity: 0.6;
+        }
+        .tab-close:hover {
+            opacity: 1;
+        }
+        #editor {
+            flex: 1;
+            padding: 15px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border: none;
+            outline: none;
+            resize: none;
+            line-height: 1.6;
+            tab-size: 4;
+        }
+        .editor-info {
+            padding: 6px 15px;
+            background: #007acc;
+            color: white;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .editor-empty {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #6a737d;
+            font-size: 18px;
+        }
+        
+        /* Status Bar */
+        .status-bar {
+            background: #007acc;
+            color: white;
+            padding: 4px 15px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal.show {
+            display: flex;
+        }
+        .modal-content {
+            background: #252526;
+            padding: 25px;
+            border-radius: 5px;
+            min-width: 400px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+        }
+        .modal-content h2 {
+            margin-bottom: 15px;
+            color: #cccccc;
+        }
+        .modal-content input,
+        .modal-content textarea {
+            width: 100%;
+            padding: 10px;
+            background: #3c3c3c;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            border-radius: 3px;
+            margin: 10px 0;
+            font-family: inherit;
+        }
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+            justify-content: flex-end;
+        }
+        
+        /* Logs */
+        .logs-panel {
+            height: 250px;
+            background: #1e1e1e;
+            border-top: 1px solid #3e3e42;
+            overflow-y: auto;
+            padding: 10px;
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        .logs-panel.collapsed {
+            height: 0;
+            padding: 0;
+        }
+        .log-line {
+            padding: 2px 0;
+        }
+        .log-error {
+            color: #f48771;
+        }
+        .log-warning {
+            color: #dcdcaa;
+        }
+        .log-info {
+            color: #4ec9b0;
+        }
+        
+        /* Loading */
+        .loading {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 10px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e1e1e;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #424242;
+            border-radius: 5px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4e4e4e;
+        }
+    </style>
+</head>
+<body>
+    <!-- Auth Modal -->
+    <div id="authModal" class="modal show">
+        <div class="modal-content">
+            <h2>🔐 Authentification</h2>
+            <p style="color: #858585; margin-bottom: 15px;">Mot de passe par défaut: <code>password</code></p>
+            <input type="password" id="password" placeholder="Mot de passe" onkeypress="if(event.key==='Enter') authenticate()">
+            <div class="modal-actions">
+                <button class="btn" onclick="authenticate()">Se connecter</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h1>📁 Explorateur de Fichiers</h1>
+            <div style="margin-top: 10px; font-size: 12px; color: #858585;">
+                <span id="systemInfo">Chargement...</span>
+            </div>
+        </div>
+        <div class="file-tree" id="fileTree">
+            <div style="text-align: center; padding: 20px; color: #858585;">
+                <div class="loading"></div>
+                <p style="margin-top: 10px;">Chargement...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <!-- Toolbar -->
+        <div class="toolbar">
+            <button class="btn" onclick="saveFile()" id="saveBtn" disabled>
+                💾 Sauvegarder
+            </button>
+            <button class="btn" onclick="showNewFileModal()">
+                ➕ Nouveau
+            </button>
+            <button class="btn danger" onclick="deleteFile()" id="deleteBtn" disabled>
+                🗑️ Supprimer
+            </button>
+            <button class="btn" onclick="refreshFiles()">
+                🔄 Actualiser
+            </button>
+            <div class="breadcrumb" id="breadcrumb">
+                Aucun fichier ouvert
+            </div>
+            <button class="btn" onclick="toggleLogs()">
+                📋 Logs
+            </button>
+            <button class="btn" onclick="restartService()">
+                🔄 Redémarrer Service
+            </button>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs" id="tabs"></div>
+
+        <!-- Editor -->
+        <div class="editor-container">
+            <div class="editor-empty" id="editorEmpty">
+                <div style="text-align: center;">
+                    <p style="font-size: 24px; margin-bottom: 10px;">📝</p>
+                    <p>Sélectionnez un fichier pour commencer</p>
+                </div>
+            </div>
+            <textarea id="editor" style="display: none;" spellcheck="false"></textarea>
+        </div>
+
+        <!-- Logs Panel -->
+        <div class="logs-panel collapsed" id="logsPanel"></div>
+
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <span id="statusLeft">Prêt</span>
+            <span id="statusRight">carey-waynium-api</span>
+        </div>
+    </div>
+
+    <!-- New File Modal -->
+    <div id="newFileModal" class="modal">
+        <div class="modal-content">
+            <h2>Nouveau Fichier</h2>
+            <input type="text" id="newFileName" placeholder="Nom du fichier (ex: test.py)">
+            <div class="modal-actions">
+                <button class="btn" onclick="createFile()">Créer</button>
+                <button class="btn danger" onclick="closeModal('newFileModal')">Annuler</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://46.255.164.90:5001/api';
+        let currentPassword = '';
+        let currentFile = null;
+        let openFiles = [];
+        let fileContents = {};
+        let logsVisible = false;
+
+        // Authenticate
+        async function authenticate() {
+            const password = document.getElementById('password').value;
+            
+            try {
+                const res = await fetch(`${API_BASE}/auth`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({password})
+                });
+                
+                if (res.ok) {
+                    currentPassword = password;
+                    document.getElementById('authModal').classList.remove('show');
+                    init();
+                } else {
+                    alert('Mot de passe incorrect');
+                }
+            } catch (error) {
+                alert('Erreur de connexion: ' + error.message);
+            }
+        }
+
+        // Initialize
+        async function init() {
+            await loadSystemInfo();
+            await loadFiles('');
+        }
+
+        // Load system info
+        async function loadSystemInfo() {
+            try {
+                const res = await fetch(`${API_BASE}/system/info`);
+                const data = await res.json();
+                
+                const sizeMB = (data.total_size / 1024 / 1024).toFixed(2);
+                document.getElementById('systemInfo').innerHTML = `
+                    ${data.file_count} fichiers · ${sizeMB} MB
+                `;
+            } catch (error) {
+                console.error('Erreur system info:', error);
+            }
+        }
+
+        // Load files
+        async function loadFiles(path = '') {
+            try {
+                const res = await fetch(`${API_BASE}/files?path=${encodeURIComponent(path)}`);
+                const data = await res.json();
+                
+                const tree = document.getElementById('fileTree');
+                tree.innerHTML = '';
+                
+                // Parent directory
+                if (path !== '') {
+                    const parentPath = path.split('/').slice(0, -1).join('/');
+                    tree.innerHTML += `
+                        <div class="tree-item folder" onclick="loadFiles('${parentPath}')">
+                            <span class="icon">📁</span>
+                            <span>.. (Parent)</span>
+                        </div>
+                    `;
+                }
+                
+                // Items
+                data.items.forEach(item => {
+                    const icon = item.type === 'directory' ? '📁' : getFileIcon(item.extension);
+                    const className = item.type === 'directory' ? 'folder' : 'file';
+                    const onclick = item.type === 'directory' 
+                        ? `loadFiles('${item.path}')`
+                        : `openFile('${item.path}')`;
+                    
+                    tree.innerHTML += `
+                        <div class="tree-item ${className}" onclick="${onclick}">
+                            <span class="icon">${icon}</span>
+                            <span>${item.name}</span>
+                        </div>
+                    `;
+                });
+            } catch (error) {
+                console.error('Erreur load files:', error);
+                document.getElementById('fileTree').innerHTML = 
+                    `<p style="color: #f48771; padding: 15px;">Erreur: ${error.message}</p>`;
+            }
+        }
+
+        // Get file icon
+        function getFileIcon(ext) {
+            const icons = {
+                '.py': '🐍',
+                '.js': '📜',
+                '.json': '📋',
+                '.md': '📝',
+                '.txt': '📄',
+                '.sh': '⚙️',
+                '.env': '🔐',
+                '.html': '🌐',
+                '.css': '🎨',
+                '.yaml': '📋',
+                '.yml': '📋'
+            };
+            return icons[ext] || '📄';
+        }
+
+        // Open file
+        async function openFile(path) {
+            try {
+                updateStatus('Chargement...');
+                
+                const res = await fetch(`${API_BASE}/file/read?path=${encodeURIComponent(path)}`);
+                const data = await res.json();
+                
+                if (!res.ok) {
+                    alert(data.error);
+                    return;
+                }
+                
+                currentFile = path;
+                fileContents[path] = data.content;
+                
+                if (!openFiles.includes(path)) {
+                    openFiles.push(path);
+                }
+                
+                document.getElementById('editor').value = data.content;
+                document.getElementById('editor').style.display = 'block';
+                document.getElementById('editorEmpty').style.display = 'none';
+                document.getElementById('breadcrumb').textContent = path;
+                document.getElementById('saveBtn').disabled = false;
+                document.getElementById('deleteBtn').disabled = false;
+                
+                renderTabs();
+                updateStatus('Prêt');
+            } catch (error) {
+                alert('Erreur: ' + error.message);
+            }
+        }
+
+        // Render tabs
+        function renderTabs() {
+            const tabsContainer = document.getElementById('tabs');
+            tabsContainer.innerHTML = '';
+            
+            openFiles.forEach(path => {
+                const fileName = path.split('/').pop();
+                const isActive = path === currentFile;
+                
+                tabsContainer.innerHTML += `
+                    <div class="tab ${isActive ? 'active' : ''}" onclick="switchTab('${path}')">
+                        <span>${fileName}</span>
+                        <span class="tab-close" onclick="event.stopPropagation(); closeTab('${path}')">✕</span>
+                    </div>
+                `;
+            });
+        }
+
+        // Switch tab
+        function switchTab(path) {
+            currentFile = path;
+            document.getElementById('editor').value = fileContents[path] || '';
+            document.getElementById('breadcrumb').textContent = path;
+            renderTabs();
+        }
+
+        // Close tab
+        function closeTab(path) {
+            openFiles = openFiles.filter(f => f !== path);
+            delete fileContents[path];
+            
+            if (currentFile === path) {
+                currentFile = openFiles[0] || null;
+                if (currentFile) {
+                    switchTab(currentFile);
+                } else {
+                    document.getElementById('editor').style.display = 'none';
+                    document.getElementById('editorEmpty').style.display = 'flex';
+                    document.getElementById('saveBtn').disabled = true;
+                    document.getElementById('deleteBtn').disabled = true;
+                }
+            }
+            
+            renderTabs();
+        }
+
+        // Save file
+        async function saveFile() {
+            if (!currentFile) return;
+            
+            const content = document.getElementById('editor').value;
+            
+            try {
+                updateStatus('Sauvegarde...');
+                
+                const res = await fetch(`${API_BASE}/file/write`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        path: currentFile,
+                        content: content,
+                        password: currentPassword
+                    })
+                });
+                
+                const data = await res.json();
+                
+                if (res.ok) {
+                    fileContents[currentFile] = content;
+                    updateStatus('✅ Sauvegardé');
+                    setTimeout(() => updateStatus('Prêt'), 2000);
+                } else {
+                    alert('Erreur: ' + data.error);
+                }
+            } catch (error) {
+                alert('Erreur: ' + error.message);
+            }
+        }
+
+        // Delete file
+        async function deleteFile() {
+            if (!currentFile) return;
+            
+            if (!confirm(`Supprimer ${currentFile} ?`)) return;
+            
+            try {
+                const res = await fetch(`${API_BASE}/file/delete`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        path: currentFile,
+                        password: currentPassword
+                    })
+                });
+                
+                const data = await res.json();
+                
+                if (res.ok) {
+                    closeTab(currentFile);
+                    await refreshFiles();
+                    alert('Fichier supprimé');
+                } else {
+                    alert('Erreur: ' + data.error);
+                }
+            } catch (error) {
+                alert('Erreur: ' + error.message);
+            }
+        }
+
+        // Show new file modal
+        function showNewFileModal() {
+            document.getElementById('newFileModal').classList.add('show');
+            document.getElementById('newFileName').focus();
+        }
+
+        // Create file
+        async function createFile() {
+            const fileName = document.getElementById('newFileName').value.trim();
+            
+            if (!fileName) {
+                alert('Entrez un nom de fichier');
+                return;
+            }
+            
+            try {
+                const res = await fetch(`${API_BASE}/file/create`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        path: fileName,
+                        password: currentPassword
+                    })
+                });
+                
+                const data = await res.json();
+                
+                if (res.ok) {
+                    closeModal('newFileModal');
+                    await refreshFiles();
+                    await openFile(fileName);
+                } else {
+                    alert('Erreur: ' + data.error);
+                }
+            } catch (error) {
+                alert('Erreur: ' + error.message);
+            }
+        }
+
+        // Close modal
+        function closeModal(id) {
+            document.getElementById(id).classList.remove('show');
+        }
+
+        // Refresh files
+        async function refreshFiles() {
+            const currentPath = document.getElementById('breadcrumb').textContent;
+            const path = currentPath === 'Aucun fichier ouvert' ? '' : currentPath.split('/').slice(0, -1).join('/');
+            await loadFiles(path);
+            await loadSystemInfo();
+        }
+
+        // Toggle logs
+        async function toggleLogs() {
+            logsVisible = !logsVisible;
+            const logsPanel = document.getElementById('logsPanel');
+            
+            if (logsVisible) {
+                logsPanel.classList.remove('collapsed');
+                await loadLogs();
+            } else {
+                logsPanel.classList.add('collapsed');
+            }
+        }
+
+        // Load logs
+        async function loadLogs() {
+            try {
+                const res = await fetch(`${API_BASE}/system/logs?lines=100`);
+                const data = await res.json();
+                
+                const logsPanel = document.getElementById('logsPanel');
+                const lines = data.logs.split('\n');
+                
+                logsPanel.innerHTML = '';
+                lines.forEach(line => {
+                    let className = 'log-line';
+                    if (line.includes('ERROR') || line.includes('error')) {
+                        className += ' log-error';
+                    } else if (line.includes('WARNING') || line.includes('warning')) {
+                        className += ' log-warning';
+                    } else if (line.includes('INFO')) {
+                        className += ' log-info';
+                    }
+                    
+                    logsPanel.innerHTML += `<div class="${className}">${line}</div>`;
+                });
+                
+                logsPanel.scrollTop = logsPanel.scrollHeight;
+            } catch (error) {
+                console.error('Erreur logs:', error);
+            }
+        }
+
+        // Restart service
+        async function restartService() {
+            if (!confirm('Redémarrer le service carey_api ?')) return;
+            
+            try {
+                updateStatus('Redémarrage...');
+                
+                const res = await fetch(`${API_BASE}/system/service`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        action: 'restart',
+                        password: currentPassword
+                    })
+                });
+                
+                const data = await res.json();
+                
+                if (data.success) {
+                    updateStatus('✅ Service redémarré');
+                    setTimeout(() => {
+                        updateStatus('Prêt');
+                        if (logsVisible) loadLogs();
+                    }, 2000);
+                } else {
+                    alert('Erreur: ' + data.output);
+                }
+            } catch (error) {
+                alert('Erreur: ' + error.message);
+            }
+        }
+
+        // Update status
+        function updateStatus(text) {
+            document.getElementById('statusLeft').textContent = text;
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // Ctrl/Cmd + S = Save
+            if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                e.preventDefault();
+                saveFile();
+            }
+            
+            // Ctrl/Cmd + N = New file
+            if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+                e.preventDefault();
+                showNewFileModal();
+            }
+            
+            // Escape = Close modals
+            if (e.key === 'Escape') {
+                closeModal('newFileModal');
+            }
+        });
+
+        // Auto-save on editor change (optional)
+        let saveTimeout;
+        document.getElementById('editor').addEventListener('input', () => {
+            clearTimeout(saveTimeout);
+            updateStatus('Modifié (non sauvegardé)');
+            
+            // Auto-save après 2 secondes d'inactivité (optionnel)
+            // saveTimeout = setTimeout(() => saveFile(), 2000);
+        });
+    </script>
+</body>
+</html>
